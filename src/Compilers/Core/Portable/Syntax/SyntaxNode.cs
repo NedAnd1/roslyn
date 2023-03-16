@@ -713,6 +713,33 @@ namespace Microsoft.CodeAnalysis
             return new ChildSyntaxList(this);
         }
 
+        internal ChildSyntaxList.Segment SiblingsAfterSelf()
+        {
+            int initialIndex = 0;
+            int terminalIndex = 0;
+            if (_parent != null)
+            {
+                initialIndex = _parent.GetIndexOfChild(this);
+                Debug.Assert(initialIndex >= 0, "Node couldn't be found in its parent.");
+                initialIndex &= int.MaxValue; // Doesn't affect non-negative numbers.
+                                              // Turns the not-found index (-1) into a virtually unreachable number, causing the segment to be empty.
+
+                terminalIndex = ChildSyntaxList.CountNodes(_parent.Green);
+            }
+            return new ChildSyntaxList.Segment(_parent!, initialIndex, terminalIndex);
+        }
+
+        internal ChildSyntaxList.Reversed SiblingsBeforeSelf()
+        {
+            int initialIndex = 0;
+            if (_parent != null)
+            {
+                initialIndex = _parent.GetIndexOfChild(this);
+                Debug.Assert(initialIndex >= 0, "Node couldn't be found in its parent.");
+            }
+            return new ChildSyntaxList.Reversed(_parent!, initialIndex);
+        }
+
         public virtual SyntaxNodeOrToken ChildThatContainsPosition(int position)
         {
             //PERF: it is very important to keep this method fast.
@@ -1613,6 +1640,134 @@ recurse:
             clone._syntaxTree = syntaxTree;
 
             return clone;
+        }
+
+        /// <summary>
+        ///  Gets the index of the given <paramref name="targetNode" /> in the current SyntaxNode.
+        /// </summary>
+        /// <returns>
+        ///  <c>-1</c> if <paramref name="targetNode" /> isn't a direct child.
+        /// </returns>
+        internal int GetIndexOfChild(SyntaxNode targetNode)
+        {
+            // Since we bypass the enumeration of a ChildSyntaxList,
+            // maintaining a binary search for as long as we can is best,
+            // in order to minimize the number of virtual calls, etc.
+            //
+            // Performs 4 times as fast as Blender.Cursor.IndexOfNodeInParent while maintaining the same results.
+            // Jump-less variants of this method performed significantly worse, especially since it has a recursive impact on the speed of syntax analysis.
+            int a = 0;
+            int index = 0;
+            int slotIndex = -1;
+            SyntaxNode? red;
+            GreenNode? greenChild;
+            int slotCount = this.SlotCount;
+FindListOrItem:
+            int targetEndPosition = targetNode.Position + targetNode.FullWidth;
+            if (++slotIndex < slotCount)
+            {
+                red = this.GetCachedSlot(slotIndex); // searching for a node that's already been created
+                if (red != null)
+                {
+                    // Search for the first slot whose end is at or beyond the end of our target child.
+                    if (red.Position + red.FullWidth >= targetEndPosition)
+                    {
+                        if (red.IsList)
+                        {
+                            goto ListFound;
+                        }
+                        else if (red == targetNode)
+                        {
+                            goto ItemFound;
+                        }
+                    }
+                }
+                else
+                {
+                    greenChild = this.Green.GetSlot(slotIndex);
+                    if (greenChild == null)
+                    {
+                        goto FindListOrItem;
+                    }
+                    goto NextSlot;
+                }
+            }
+            else
+            {
+                goto NotFound;
+            }
+SlotAfterCurrentNode:
+            greenChild = red.Green;
+NextSlot:
+            if (greenChild.IsList)
+            {
+                index += greenChild.SlotCount;
+            }
+            else
+            {
+                ++index;
+            }
+            goto FindListOrItem;
+
+ItemFound:
+            return index + a;
+
+ListFound:
+            int b = red.SlotCount;
+            while (a < b)
+            {
+                int i = a + b >>> 1;
+                var pivot = red.GetCachedSlot(i);
+                if (pivot == null)
+                {
+                    // If we happen to hit an uncached node, we've gone too far...
+                    // If we happen to hit a token (~25% chance), that's okay too.
+                    goto LinearSearch;
+                }
+                else
+                {
+                    int targetOffset = targetNode.Position - pivot.Position;
+                    if (targetOffset < 0)
+                    {
+                        b = i;
+                    }
+                    else if (targetOffset > 0)
+                    {
+                        a = i + 1;
+                    }
+                    else if (pivot == targetNode)
+                    {
+                        a = i;
+                        goto ItemFound;
+                    }
+                    else
+                    {
+                        // If we happen to hit a different node with the same position (unexpected).
+                        goto LinearSearch;
+                    }
+                }
+            }
+            goto NotInCurrentList;
+
+LinearSearch:
+            do
+            {
+                if (red.GetCachedSlot(a) == targetNode)
+                {
+                    goto ItemFound;
+                }
+            }
+            while (++a < b);
+
+NotInCurrentList:
+            a = 0; // in case we search another slot
+            if (targetNode.Position >= red.Position)
+            {
+                // If the current slot "contained" the child node, but we still couldn't find it (small chance).
+                goto SlotAfterCurrentNode;
+            }
+NotFound:
+            return -1;
         }
     }
 }

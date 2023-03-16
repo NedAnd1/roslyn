@@ -89,6 +89,16 @@ namespace Microsoft.CodeAnalysis
             return GetNextToken(current, predicate, stepInto != null, stepInto);
         }
 
+        internal SyntaxToken GetNextToken4(in SyntaxToken current, bool includeZeroWidth, bool includeSkipped, bool includeDirectives, bool includeDocumentationComments)
+        {
+            return GetNextToken4(current, GetPredicateFunction(includeZeroWidth), GetStepIntoFunction(includeSkipped, includeDirectives, includeDocumentationComments));
+        }
+
+        internal SyntaxToken GetNextToken4(in SyntaxToken current, Func<SyntaxToken, bool> predicate, Func<SyntaxTrivia, bool>? stepInto)
+        {
+            return GetNextToken4(current, predicate, stepInto != null, stepInto);
+        }
+
         private static readonly ObjectPool<Stack<ChildSyntaxList.Enumerator>> s_childEnumeratorStackPool
             = new ObjectPool<Stack<ChildSyntaxList.Enumerator>>(() => new Stack<ChildSyntaxList.Enumerator>(), 10);
 
@@ -477,6 +487,45 @@ namespace Microsoft.CodeAnalysis
             return default;
         }
 
+        internal SyntaxToken GetNextToken4(
+            SyntaxNode node,
+            Func<SyntaxToken, bool>? predicate,
+            Func<SyntaxTrivia, bool>? stepInto)
+        {
+            while (node.Parent != null)
+            {
+                foreach (var child in node.SiblingsAfterSelf())
+                {
+                    if (child.IsToken)
+                    {
+                        var token = GetFirstToken(child.AsToken(), predicate, stepInto);
+                        if (token.RawKind != None)
+                        {
+                            return token;
+                        }
+                    }
+                    else
+                    {
+                        Debug.Assert(child.IsNode);
+                        var token = GetFirstToken(child.AsNode()!, predicate, stepInto);
+                        if (token.RawKind != None)
+                        {
+                            return token;
+                        }
+                    }
+                }
+                // didn't find the next token in my parent's children, look up the tree
+                node = node.Parent;
+            }
+
+            if (node.IsStructuredTrivia)
+            {
+                return GetNextToken(((IStructuredTriviaSyntax)node).ParentTrivia, predicate, stepInto);
+            }
+
+            return default;
+        }
+
         internal SyntaxToken GetPreviousToken(
             SyntaxNode node,
             Func<SyntaxToken, bool> predicate,
@@ -575,6 +624,51 @@ namespace Microsoft.CodeAnalysis
 
                 // otherwise get next token from the parent's parent, and so on
                 return GetNextToken(current.Parent, predicate, stepInto);
+            }
+
+            return default;
+        }
+
+        internal SyntaxToken GetNextToken4(in SyntaxToken current, Func<SyntaxToken, bool>? predicate, bool searchInsideCurrentTokenTrailingTrivia, Func<SyntaxTrivia, bool>? stepInto)
+        {
+            Debug.Assert(searchInsideCurrentTokenTrailingTrivia == false || stepInto != null);
+            if (current.Parent != null)
+            {
+                // look inside trailing trivia for structure
+                if (searchInsideCurrentTokenTrailingTrivia)
+                {
+                    var firstToken = GetFirstToken(current.TrailingTrivia, predicate, stepInto!);
+                    if (firstToken.RawKind != None)
+                    {
+                        return firstToken;
+                    }
+                }
+
+                // walk forward in parent's child list until we find ourself 
+                // and then return the next token
+                foreach (var child in current.SiblingsAfterSelf())
+                {
+                    if (child.IsToken)
+                    {
+                        var token = GetFirstToken(child.AsToken(), predicate, stepInto);
+                        if (token.RawKind != None)
+                        {
+                            return token;
+                        }
+                    }
+                    else
+                    {
+                        Debug.Assert(child.IsNode);
+                        var token = GetFirstToken(child.AsNode()!, predicate, stepInto);
+                        if (token.RawKind != None)
+                        {
+                            return token;
+                        }
+                    }
+                }
+
+                // otherwise get next token from the parent's parent, and so on
+                return GetNextToken4(current.Parent, predicate, stepInto);
             }
 
             return default;
